@@ -1,0 +1,939 @@
+---
+title: "NFL Insights"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: row
+    vertical_layout: scroll
+    #social: [ "twitter", "github", "menu" ]
+    #css: styles/main.css
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(nflreadr)
+library(DT)
+library(lubridate) # zeitzonen umrechnen
+library(formattable)
+library(ggrepel)
+library(scales)
+library(ggplot2)
+library(nflplotR)
+library(sysfonts)
+library(showtext)
+library(shiny)
+library(gt)
+library(gtExtras)
+library(ggimage)
+
+#import font from sysfonts
+sysfonts::font_add_google("roboto","roboto")
+showtext_auto()
+
+var.season = nflreadr::get_current_season()
+var.currentWeek <- nflreadr::get_current_week()
+var.plotCaption <- "Chart: @JakobEschler"
+
+var.colorAccent = "#e84393"
+var.darkgrey = "#535c68"
+var.lightgrey = "#95afc0"
+var.red = "#ff7979"
+
+nflTeams <- nflfastR::teams_colors_logos
+
+# local data
+#dvoa_teams <- read.csv("data/football-outsiders/fo-dvoa-data.csv")
+#epa_teams <- read.csv("data/nfl-adjusted-epa.csv")
+#pace_teams <- read.csv("data/football-outsiders/fo-pace-data.csv")
+
+#personnel_groupings_offense <- read.csv("data/nfl-personnel-groupings-offense.csv")
+#personnel_groupings_defense <- read.csv("data/nfl-personnel-groupings-defense.csv")
+
+f_create_ranks <- function(df, arrange_by, rank_col_name) {
+  df <- df %>% 
+    dplyr::arrange({{arrange_by}}) %>% 
+    dplyr::mutate({{rank_col_name}} := row_number())
+}
+
+players <- nflreadr::load_players() %>% 
+  dplyr::filter(status != "RET") %>% 
+  dplyr::mutate(player = paste0(nflreadr::clean_player_names(display_name), " (", team_abbr, ", ", position, ")")) %>% 
+  dplyr::select(player, gsis_id, gsis_it_id)
+
+pbp <- nflreadr::load_pbp(var.season)
+```
+
+# Spieler Partizipation {data-navmenu="Play by Play"}
+
+## Sidebar {.sidebar}
+```{r echo=FALSE}
+playerIds <- players$gsis_it_id
+names(playerIds) <- players$player
+
+shiny::selectizeInput(
+  "selectPlayer",
+  "Filter nach Spieler",
+  choices = playerIds,
+  multiple= FALSE,
+  options = list(
+    placeholder = "Spieler wählen",
+    onInitialize = I('function() { this.setValue(""); }')
+  )
+)
+
+shiny::checkboxInput("selectImpactPlays", "Only plays where player is involved", FALSE)
+```
+
+## Main
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+selectedPlayerGsis <- reactive({
+  players %>% 
+    dplyr::filter(gsis_it_id == input$selectPlayer) %>% 
+    dplyr::pull(gsis_id)
+})
+
+pbp <- reactive({
+  nflreadr::load_participation(include_pbp = TRUE) %>% 
+    purrr::when(
+      input$selectPlayer != '' ~ dplyr::filter(., stringr::str_detect(players_on_play, input$selectPlayer)),
+      TRUE ~ .
+    ) %>% 
+    purrr::when(
+    # filter through all coulmns that ends with player_id
+      input$selectImpactPlays == TRUE ~ dplyr::filter(., dplyr::if_any(dplyr::ends_with("_player_id"), ~ . == selectedPlayerGsis())),
+      TRUE ~ .
+    ) %>%
+    dplyr::select(week, posteam, defteam, qtr, desc, players_on_play)
+})
+
+DT::renderDataTable({
+  DT::datatable(
+    pbp() %>% 
+      dplyr::select(week:desc),
+    rownames = F, filter = "top", options = list(pageLength = 12, columnDefs = list(list(width = '50px', targets = c(0,1,2,3))))
+  )
+})
+
+```
+
+# Receiver vs Scheme {data-navmenu="Player"}
+
+## Sidebar {.sidebar}
+```{r echo=FALSE}
+receiver_vs_scheme <- readr::read_csv("data/fpts-receiver-vs-schemes.csv", show_col_types = FALSE) %>% 
+  dplyr::mutate(
+    team_name = nflreadr::clean_team_abbrs(team_name),
+    player = nflreadr::clean_player_names(player)
+  )
+
+receiver_vs_scheme_input <- receiver_vs_scheme %>% 
+  dplyr::filter(season == nflreadr::get_current_season()) %>% 
+  dplyr::mutate(selection = paste0(player, " (", team_name, " ", position, ")")) %>% 
+  dplyr::select(player_id, selection)
+
+playerIds <- receiver_vs_scheme_input$player_id
+names(playerIds) <- receiver_vs_scheme_input$selection
+
+shiny::selectizeInput(
+  "selectReceiver",
+  "Filter nach Spieler",
+  choices = playerIds,
+  multiple= FALSE,
+  options = list(
+    placeholder = "Spieler wählen",
+    onInitialize = I('function() { this.setValue(""); }')
+  )
+)
+```
+
+# Receiver vs Scheme {data-navmenu="Teams"}
+## Pass Rate over Expected
+
+```{r}
+source("R/teams/proe.R")
+```
+
+
+## Main
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+source("R/receiver-vs-scheme/receiver-vs-scheme.R")
+
+selected_data <- reactive({
+  receiver_vs_scheme %>%
+    purrr::when(
+      input$selectReceiver != '' ~ dplyr::filter(., player_id == input$selectReceiver),
+      TRUE ~ .
+    ) %>% 
+    dplyr::left_join(
+      defense_schemes,
+      by = "team_name"
+    ) %>%
+    dplyr::mutate(
+      recommendation = dplyr::case_when(
+        pprr_vs_man > pprr_vs_zone & man_rank <= 8 ~ "strong start",
+        pprr_vs_man > pprr_vs_zone & man_rank <= 16 ~ "medium start",
+        pprr_vs_man > pprr_vs_zone & man_rank <= 24 ~ "medium sit",
+        pprr_vs_man > pprr_vs_zone & man_rank > 24 ~ "strong sit",
+        pprr_vs_zone > pprr_vs_man & zone_rank <= 8 ~ "strong start",
+        pprr_vs_zone > pprr_vs_man & zone_rank <= 16 ~ "medium start",
+        pprr_vs_zone > pprr_vs_man & zone_rank <= 24 ~ "medium sit",
+        pprr_vs_zone > pprr_vs_man & zone_rank > 24 ~ "strong sit"
+      )
+    )
+})
+
+gt::render_gt(
+  selected_data() %>% 
+    dplyr::select(ppr_vs_man:pprr_vs_zone_pctl_career) %>%
+    tidyr::gather(key, value) %>%
+    dplyr::mutate(
+      category = dplyr::case_when(
+        grepl("ppr_vs_man", key) ~ "ppr_man",
+        grepl("pprr_vs_man_pctl", key) ~ "man_pctl",
+        grepl("pprr_vs_man", key) ~ "pprr_man",
+        grepl("ppr_vs_zone", key) ~ "ppr_zone",
+        grepl("pprr_vs_zone_pctl", key) ~ "zone_pctl",
+        grepl("pprr_vs_zone", key) ~ "pprr_zone"
+      ),
+      key = dplyr::case_when(
+        grepl("career", key) ~ "start of career",
+        grepl("last_season", key) ~ "start of last season",
+        TRUE ~ "start of this Season"
+      )
+    ) %>%
+    tidyr::spread(category, value) %>%
+    dplyr::mutate(
+      index = dplyr::case_when(
+        key == "start of this Season" ~ 1,
+        key == "start of last season" ~ 2,
+        key == "start of career" ~ 3,
+      )
+    ) %>%
+    dplyr::arrange(index) %>%
+    dplyr::select(-index) %>%
+    gt::gt() %>% 
+    gt::tab_header(
+      title = "FPts vs Coverage",
+      subtitle = md(paste0("**", selected_data()$player, "'s** next opponent (", selected_data()$opponent, ") ranks ", selected_data()$man_rank, ". vs man and ", selected_data()$zone_rank, ". vs zone usage.\n**Recommendation: ", selected_data()$recommendation, "**"))
+    ) %>%
+    gt::tab_spanner(
+      label = "vs Man",
+      columns = c("ppr_man", "pprr_man", "man_pctl")
+    ) %>%
+    gt::tab_spanner(
+      label = "vs Zone",
+      columns = c("ppr_zone", "pprr_zone", "zone_pctl")
+    ) %>%
+    gt::cols_label(
+      ppr_man = "FPts",
+      pprr_man = "PPRR",
+      ppr_zone = "FPts",
+      pprr_zone = "PPRR",
+      man_pctl = "Pctl",
+      zone_pctl = "Pctl",
+      key = "Since..."
+    ) %>%
+    gt::tab_footnote(
+      footnote = "Fantasy Points in PPR format (w/o fumbles)",
+      locations = gt::cells_column_labels(columns = c(ppr_man, ppr_zone))
+    ) %>%
+    gt::tab_footnote(
+      footnote = "Fantasy Points per route run in PPR format",
+      locations = gt::cells_column_labels(columns = c(pprr_man, pprr_zone))
+    ) %>%
+    gt::fmt_number(
+      decimals = 2,
+      use_seps = FALSE
+    )
+    #gtExtras::gt_plt_bar_pct(column = man_pctl, scaled = FALSE) %>%
+    #gtExtras::gt_plt_bar_pct(column = zone_pctl, scaled = FALSE)
+  
+)
+```
+
+
+# Matchup Overview {data-navmenu="Matchups"}
+```{r matchups-globals, eval=FALSE, fig.height=20, message=TRUE, warning=TRUE, include=FALSE}
+source("R/matchups/matchups-plots.R", local = T)
+source("R/matchups/matchups-data.R", local = T)
+
+matchups_renamed <- matchups %>% 
+  rename(
+    Team = team,
+    Opp = opponent,
+    "O/U" = total_line,
+    Spread = spread_line,
+    "Off DVOA" = offense_weighted_dvoa,
+    "Off Pass DVOA" = offense_pass_dvoa,
+    "Off Rush DVOA" = offense_rush_dvoa,
+    "Opp Def DVOA" = defense_weighted_dvoa,
+    "Opp Def Pass DVOA" = defense_pass_dvoa,
+    "Opp Def Rush DVOA" = defense_rush_dvoa,
+    "Off EPA" = adjusted_off_epa,
+    "Off Pass EPA" = adjusted_off_pass_epa,
+    "Off Rush EPA" = adjusted_off_run_epa,
+    "Opp Def EPA" = adjusted_def_epa,
+    "Opp Def Pass EPA" = adjusted_def_pass_epa,
+    "Opp Def Rush EPA" = adjusted_def_run_epa,
+    "Sec / Play Rank" = sec_per_play_rank,
+    "Sec / Play (leading) Rank" = sec_per_play_leading_rank,
+    "Sec / Play (trailing) Rank" = sec_per_play_trailing_rank,
+    "Sec / Play (neutral) Rank" = sec_per_play_neutral_rank
+  )
+```
+
+## Main {.tabset .tabset-fade}
+### Total
+```{r matchup-total-comparison, eval=FALSE, fig.height=17, include=FALSE}
+output$matchups_total_dvoa <- renderPlot({
+  ggplot2::ggplot(matchups, aes(x = offense_weighted_dvoa, y = defense_weighted_dvoa)) +
+    matchup_annotations(matchups$offense_weighted_dvoa, matchups$defense_weighted_dvoa) +
+    matchup_overview_plot_defaults() +
+
+    ggplot2::labs(
+      title = "Weighted Total DVOA Matchup",
+      subtitle = "Size indicates spread line (big logo = high favorite)",
+      x = "Weighted Total DVOA - Offense",
+      y = "Weighted Total DVOA - Opponent Defense"
+    )
+}, width = 900, height = 750)
+
+output$matchups_total_epa <- renderPlot({
+  ggplot2::ggplot(matchups, aes(x = adjusted_off_epa, y = adjusted_def_epa)) +
+    matchup_annotations(matchups$adjusted_off_epa, matchups$adjusted_def_epa) +
+    matchup_overview_plot_defaults() +
+    
+    ggplot2::labs(
+      title = "Adjusted Total EPA Matchup",
+      subtitle = "Size indicates spread line (big logo = high favorite)",
+      x = "Adjusted Total EPA - Offense",
+      y = "Adjusted Total EPA - Opponent Defense"
+    )
+}, width = 900, height = 750)
+
+output$matchup_data <- DT::renderDataTable({
+  
+  formattable::formattable(
+    matchups_renamed %>% 
+      select(Team, Opp, "O/U", Spread, "Off DVOA", "Opp Def DVOA", "Off EPA", "Opp Def EPA", "Off Pass DVOA", "Opp Def Pass DVOA", "Off Pass EPA", "Opp Def Pass EPA", "Off Rush DVOA", "Opp Def Rush DVOA", "Off Rush EPA", "Opp Def Rush EPA"),
+    list(
+      "O/U" = formattable::color_tile("#e55039", "#78e08f"),
+      "Spread" = formattable::color_tile("#e55039", "#78e08f"),
+      "Off DVOA" = formattable::color_tile("#e55039", "#78e08f"),
+      "Off EPA" = formattable::color_tile("#e55039", "#78e08f"),
+      "Off Pass DVOA" = formattable::color_tile("#e55039", "#78e08f"),
+      "Off Pass EPA" = formattable::color_tile("#e55039", "#78e08f"),
+      "Off Rush DVOA" = formattable::color_tile("#e55039", "#78e08f"),
+      "Off Rush EPA" = formattable::color_tile("#e55039", "#78e08f"),
+      "Opp Def DVOA" = formattable::color_tile("#78e08f", "#e55039"),
+      "Opp Def EPA" = formattable::color_tile("#78e08f", "#e55039"),
+      "Opp Def Pass DVOA" = formattable::color_tile("#78e08f", "#e55039"),
+      "Opp Def Pass EPA" = formattable::color_tile("#78e08f", "#e55039"),
+      "Opp Def Rush DVOA" = formattable::color_tile("#78e08f", "#e55039"),
+      "Opp Def Rush EPA" = formattable::color_tile("#78e08f", "#e55039")
+    )
+  ) %>% 
+  formattable::as.datatable(rownames = F, filter = "top", options = list(pageLength = 16, order = list(list(2, 'asc'), list(3, 'asc'))))
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 6,
+      plotOutput("matchups_total_dvoa")
+    ),
+    column(
+      width = 6,
+      plotOutput("matchups_total_epa")
+    ),
+    column(
+      width = 12,
+      DT::DTOutput("matchup_data")
+    )
+  )
+})
+```
+
+### Passing
+```{r matchup-passing-comparison, eval=FALSE, fig.height=18, include=FALSE}
+output$matchups_passing_dvoa <- renderPlot({
+  ggplot2::ggplot(matchups, aes(x = offense_pass_dvoa, y = defense_pass_dvoa)) +
+    matchup_annotations(matchups$offense_pass_dvoa, matchups$defense_pass_dvoa) +
+    matchup_overview_plot_defaults() +
+    
+    ggplot2::labs(
+      title = "Weighted Passing DVOA Matchup",
+      subtitle = "Size indicates spread line (big logo = high favorite)",
+      x = "Weighted Passing DVOA - Offense",
+      y = "Weighted Passing DVOA - Opponent Defense"
+    )
+}, width = 900, height = 750)
+
+output$matchups_passing_epa <- renderPlot({
+  ggplot2::ggplot(matchups, aes(x = adjusted_off_pass_epa, y = adjusted_def_pass_epa)) +
+    matchup_annotations(matchups$adjusted_off_pass_epa, matchups$adjusted_def_pass_epa) +
+    matchup_overview_plot_defaults() +
+    
+    ggplot2::labs(
+      title = "Adjusted Passing EPA Matchup",
+      subtitle = "Size indicates spread line (big logo = high favorite)",
+      x = "Adjusted Pass EPA - Offense",
+      y = "Adjusted Pass EPA - Opponent Defense"
+    )
+}, width = 900, height = 750)
+
+output$passing_qb_matchups <- DT::renderDataTable({
+  DT::datatable(
+    matchups_renamed %>% 
+      select(Team, Opp, dplyr::starts_with("qb")),
+    rownames = F, filter = "top", options = list(pageLength = 16, order = list(4, 'desc'))
+  )
+})
+
+output$passing_wr_matchups <- DT::renderDataTable({
+  DT::datatable(
+    matchups_renamed %>% 
+      select(Team, Opp, dplyr::starts_with("wr")),
+    rownames = F, filter = "top", options = list(pageLength = 16, order = list(4, 'desc'))
+  )
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 6,
+      plotOutput("matchups_passing_dvoa")
+    ),
+    column(
+      width = 6,
+      plotOutput("matchups_passing_epa")
+    ),
+    column(
+      width = 6,
+      h2("DFS QB Matchups"),
+      DT::DTOutput("passing_qb_matchups")
+    ),
+    column(
+      width = 6,
+      h2("DFS Receiver Matchups"),
+      DT::DTOutput("passing_wr_matchups")
+    )
+  )
+})
+```
+
+
+### Rushing
+```{r matchup-rushing-comparison, eval=FALSE, fig.height=10, include=FALSE}
+output$matchups_rushing_dvoa <- renderPlot({
+  ggplot2::ggplot(matchups, aes(x = offense_rush_dvoa, y = defense_rush_dvoa)) +
+    matchup_annotations(matchups$offense_rush_dvoa, matchups$defense_rush_dvoa) +
+    matchup_overview_plot_defaults() +
+    
+    ggplot2::labs(
+      title = "Weighted Rushing DVOA Matchup",
+      subtitle = "Size indicates spread line (big logo = high favorite)",
+      x = "Weighted Rushing DVOA - Offense",
+      y = "Weighted Rushing DVOA - Opponent Defense"
+    )
+}, width = 900, height = 750)
+
+output$matchups_rushing_epa <- renderPlot({
+  ggplot2::ggplot(matchups, aes(x = adjusted_off_run_epa, y = adjusted_def_run_epa)) +
+    matchup_annotations(matchups$adjusted_off_run_epa, matchups$adjusted_def_run_epa) +
+    matchup_overview_plot_defaults() +
+    
+    ggplot2::labs(
+      title = "Adjusted Rushing EPA Matchup",
+      subtitle = "Size indicates spread line (big logo = high favorite)",
+      x = "Adjusted Rush EPA - Offense",
+      y = "Adjusted Rush EPA - Opponent Defense"
+    )
+}, width = 900, height = 750)
+
+output$passing_rb_matchups <- DT::renderDataTable({
+  DT::datatable(
+    matchups_renamed %>% 
+      select(Team, Opp, dplyr::starts_with("rb")),
+    rownames = F, filter = "top", options = list(pageLength = 16, order = list(4, 'desc'))
+  )
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 6,
+      plotOutput("matchups_rushing_dvoa")
+    ),
+    column(
+      width = 6,
+      plotOutput("matchups_rushing_epa")
+    ),
+    column(
+      width = 12,
+      h2("DFS RB Matchups"),
+      DT::DTOutput("passing_rb_matchups")
+    ),
+  )
+})
+```
+
+
+
+# Singe Matchup {data-navmenu="Matchups"}
+## Sidebar {.sidebar}
+```{r single-matchup-inputs, eval=FALSE, include=FALSE}
+selectInput(
+  "selectMatchup",
+  "Filter nach Matchup",
+  choices = matchups$matchup,
+  multiple= F,
+  selected = 1
+)
+
+matchup <- reactive({
+  matchups %>% 
+    filter(matchup == input$selectMatchup)
+})
+
+renderTable({
+  matchups %>% 
+    dplyr::filter(matchup == input$selectMatchup) %>% 
+    tidyr::gather(category, details, c(weekday, gametime, roof, surface, temp, wind, stadium)) %>%
+    dplyr::select(category, details) %>% 
+    dplyr::distinct()
+})
+```
+
+## Main
+```{r eval=FALSE, include=FALSE}
+single_matchup_charts <- matchups %>% 
+  tidyr::gather(offense, offense_value, c(dplyr::starts_with("offense"), dplyr::starts_with("adjusted_off"))) %>% 
+  tidyr::gather(defense, defense_value, c(dplyr::starts_with("defense"), dplyr::starts_with("adjusted_def"))) %>% 
+  dplyr::mutate(
+    category = dplyr::case_when(
+      grepl("weighted_dvoa", offense) & grepl("weighted_dvoa", defense) ~ "total_dvoa",
+      grepl("pass_dvoa", offense) & grepl("pass_dvoa", defense) ~ "pass_dvoa",
+      grepl("rush_dvoa", offense) & grepl("rush_dvoa", defense) ~ "rush_dvoa",
+      grepl("adjusted_off_epa", offense) & grepl("adjusted_def_epa", defense) ~ "total_epa",
+      grepl("pass_epa", offense) & grepl("pass_epa", defense) ~ "pass_epa",
+      grepl("run_epa", offense) & grepl("run_epa", defense) ~ "rush_epa",
+    ),
+    group = case_when(
+      grepl("dvoa", category) ~ "Weighted DVOA",
+      grepl("epa", category) ~ "Adjusted EPA"
+    )
+  ) %>%
+  dplyr::filter(!is.na(category))
+```
+
+### Offense vs Defense Matchups
+```{r single_matchup_total_dvoa, eval=FALSE, fig.height=8, message=FALSE, warning=FALSE, include=FALSE}
+renderPlot({
+  ggplot2::ggplot(
+    subset(
+      single_matchup_charts,
+      matchup != input$selectMatchup & category %in% c("total_dvoa", "total_epa")),
+    aes(x = offense_value, y = defense_value)
+  ) +
+    matchup_annotations(matchups$offense_weighted_dvoa, matchups$defense_weighted_dvoa) +
+    plot_single_matchup() +
+    plot_matchup_dvoa_total()
+}, width = 500, height = 700)
+```
+
+### Offense vs Defense Passing Matchups
+```{r single_matchup_pass, eval=FALSE, fig.height=8, message=FALSE, warning=FALSE, include=FALSE}
+renderPlot({
+  ggplot2::ggplot(
+    subset(
+      single_matchup_charts,
+      matchup != input$selectMatchup & category %in% c("pass_dvoa", "pass_epa")),
+    aes(x = offense_value, y = defense_value)
+  ) +
+    matchup_annotations(matchups$offense_pass_dvoa, matchups$defense_pass_dvoa) +
+    plot_single_matchup() +
+    plot_matchup_dvoa_pass()
+}, width = 500, height = 700)
+```
+
+### Offense vs Defense Rushing Matchups
+```{r single_matchup_rush, eval=FALSE, fig.height=8, message=FALSE, warning=FALSE, include=FALSE}
+renderPlot({
+  ggplot2::ggplot(
+    subset(
+      single_matchup_charts,
+      matchup != input$selectMatchup & category %in% c("rush_dvoa", "rush_epa")),
+    aes(x = offense_value, y = defense_value)
+  ) +
+    matchup_annotations(matchups$offense_rush_dvoa, matchups$defense_rush_dvoa) +
+    plot_single_matchup() +
+    plot_matchup_dvoa_rush()
+}, width = 500, height = 700)
+```
+
+
+## Row
+```{r injuries, eval=FALSE, fig.height=10, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+injuries <- nflreadr::load_injuries() %>% 
+  dplyr::rename(status = report_status) %>%
+  dplyr::select(gsis_id, week, team, full_name, position, status, practice_primary_injury) %>% 
+  rbind(
+    nflreadr::load_rosters_weekly() %>% 
+      dplyr::filter(status == "R/Injured") %>% 
+      dplyr::select(gsis_id, week, team, full_name, position, status) %>% 
+      dplyr::mutate(status = "IR"),
+    fill = T
+  ) %>% 
+  dplyr::filter(week == var.currentWeek) %>% 
+  dplyr::left_join(
+    nflreadr::load_ff_playerids() %>% 
+      dplyr::select(gsis_id, pfr_id),
+    by = "gsis_id"
+  ) %>% 
+  dplyr::left_join(
+    nflreadr::load_snap_counts() %>% 
+      dplyr::group_by(pfr_player_id) %>% 
+      dplyr::summarise(across(where(is.numeric), mean, na.rm = T), .groups = "drop") %>% 
+      dplyr::select(-week, -season),
+    by = c("pfr_id" = "pfr_player_id")
+  ) %>% 
+  dplyr::mutate(
+    snap_pct_avg = case_when(
+      position %in% c("C", "FB", "G", "OL", "QB", "RB", "T", "TE", "WR") ~ round(offense_pct, 2),
+      position %in% c("CB", "DB", "DE", "DL", "DT", "LB", "S") ~ round(defense_pct, 2)
+    )
+  ) %>% 
+  dplyr::select(-dplyr::ends_with("_id"), -dplyr::ends_with("_snaps"), -dplyr::ends_with("_pct"))
+```
+
+### Away
+```{r eval=FALSE, include=FALSE}
+DT::renderDataTable({
+  DT::datatable(
+    injuries %>% 
+      filter(team == matchup()$away_team) %>% 
+      select(-week, -team),
+    rownames = F,
+    filter = "top",
+    options = list(pageLength = 5, order = list(4, 'desc'))
+  )
+})
+```
+
+
+### Home
+```{r eval=FALSE, include=FALSE}
+DT::renderDataTable({
+  DT::datatable(
+    injuries %>% 
+      filter(team == matchup()$home_team) %>% 
+      select(-week, -team),
+    rownames = F,
+    filter = "top",
+    options = list(pageLength = 5, order = list(4, 'desc'))
+  )
+})
+```
+
+## Row
+### Sim
+
+
+# Alt
+```{r single-matchup-data, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+# personnel ----
+matchupsPersonnelOffense <- reactive({
+  personnel_groupings_offense %>% 
+    filter(grouping_offense %in% c("10", "11", "12", "13", "21", "22"))
+})
+
+
+
+output$matchupResults <- renderTable({
+  results <- singleMatchup() %>% 
+    select(away_score_pred, home_score_pred)
+  
+  table(results)
+})
+
+output$data <- DT::renderDataTable({matchupAdvantages()})
+
+source("R/matchups/single-matchup-advantages.R", local = T)
+source("R/matchups/single-matchup-passing.R", local = T)
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+renderUI({
+  
+  div(
+    class="matchup-single",
+    sidebarLayout(
+      sidebarPanel(
+        width = 2,
+        tagList(
+          selectizeInput(
+            "selectMatchup",
+            "Filter nach Matchup",
+            choices = matchups$matchup,
+            multiple= F,
+          )
+        ),
+        uiOutput("matchupDetails")
+      ),
+      mainPanel(
+        width = 10,
+        div(
+          
+          # header
+          fluidRow(
+            width = 12,
+            column(
+              width = 5,
+              style="text-align: center;",
+              #tags$img(src = singleMatchup()$away_team_logo_espn[1], width = 100, height = 100),
+              tags$h2(renderText(paste("WP", scales::percent(round(matchupsimGameSummary()$away_percentage, 2)))), style="text-align: center;")
+            ),
+            column(
+              width = 2,
+              tags$h1(renderText({ input$selectMatchup }), style="text-align: center;"),
+              tags$div(
+                class="matchup-single__result",
+                tags$h2(renderText(singleMatchup()$away_score_pred[1])),
+                tags$span(":"),
+                tags$h2(renderText(singleMatchup()$home_score_pred[2]))
+              )
+            ),
+            column(
+              width = 5,
+              style="text-align: center;",
+              #img(src = singleMatchup()$home_team_logo_espn[2], width = 100, height = 100),
+              tags$h2(renderText(paste("WP", scales::percent(round(matchupsimGameSummary()$home_percentage, 2)))), style="text-align: center;")
+            )
+          ),
+          
+          fluidRow(
+            width = 12,
+            
+            # away team advantages ----
+            matchup_advantages(1, 2),
+            
+            # simulation ----
+            column(
+              width = 6,
+              renderPlot(
+                height = 300,
+                expr = matchupSimGames() %>% 
+                  ggplot(aes(x = result)) +
+                    geom_histogram(dat = subset(matchupSimGames(), result < 0), fill = singleMatchup()$away_team_color[1]) + # win away team
+                    geom_histogram(dat = subset(matchupSimGames(), result == 0)) + # tie
+                    geom_histogram(dat = subset(matchupSimGames(), result > 0), fill = singleMatchup()$home_team_color[2]) + # win home team
+                    geom_vline(aes(xintercept = mean(result)), color = var.colorAccent) + # sim mean
+                    geom_point(x = singleMatchup()$spread_line[1], y = 25, color = var.colorAccent, size = 5, shape = 17) + # spread
+                    annotate("text", x = singleMatchup()$spread_line[1], y = -70, label = "Spread", color = var.colorAccent) +
+                    annotate("text", x = mean(matchupSimGames()$result), y = 1150, label = "Durchschnitt", color = var.colorAccent, hjust = 1.1) +
+                    labs(
+                      title = "Punktedifferenz basierend auf 10.000 Simulationen",
+                      subtitle = "Je höher die Kurve in der Mitte, desto knapper das Ergebnis.",
+                      caption = paste("Simulation: nflseedR;", var.plotCaption),
+                      x = "Punktedifferenz aus Sicht des Heimteams",
+                      y = "Häufigkeit"
+                    ) +
+                    ylim(c(-100, 1200)) +
+                    theme_minimal()
+              )
+            ),
+            
+            # home team advantages ----
+            matchup_advantages(2, 1)
+          ),
+          
+          # passing
+          fluidRow(
+            width = 12,
+            tags$h3("Passing"),
+            column(
+              width = 6,
+              fluidRow(
+                width = 12,
+                column(
+                  width = 6,
+                  renderPlot(
+                    height = 300,
+                    expr = matchupsPersonnelOffense() %>%
+                      filter(posteam == singleMatchup()$team[1]) %>% 
+                      ggplot(aes(x = as.character(grouping_offense), y = plays_by_type_perc_above_avg, fill = play_type)) +
+                        geom_col(position = "dodge") +
+                        geom_point(aes(y = play_perc_above_avg))+
+                        labs(
+                          title = "Offense Personnel nach Play Type",
+                          x = "Offense personnel",
+                          y = "Nutzung über Liga Durchschnitt"
+                        ) +
+                        theme_minimal()
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    ),
+    
+    DT::renderDataTable({singleMatchup()})
+  )
+})
+```
+
+
+```{r single-matchup-ui, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+renderUI({
+
+    
+    
+    # header
+    fluidRow(
+      width = 12,
+      column(
+        width = 5,
+        style="text-align: center;",
+        img(src = singleMatchup()$away_team_logo_espn[1], width = 100, height = 100),
+        tags$h2(renderText(paste("WP", scales::percent(round(matchupsimGameSummary()$away_percentage, 2)))), style="text-align: center;")
+      ),
+      column(
+        width = 2,
+        tags$h1(renderText({ input$selectMatchup }), style="text-align: center;"),
+        tags$div(
+          class="matchup-single__result",
+          tags$h2(renderText(singleMatchup()$away_score_pred[1])),
+          tags$span(":"),
+          tags$h2(renderText(singleMatchup()$home_score_pred[2]))
+        )
+      ),
+      column(
+        width = 5,
+        style="text-align: center;",
+        img(src = singleMatchup()$home_team_logo_espn[2], width = 100, height = 100),
+        tags$h2(renderText(paste("WP", scales::percent(round(matchupsimGameSummary()$home_percentage, 2)))), style="text-align: center;")
+      )
+    ),
+    
+    # simulation
+    fluidRow(
+      width = 12,
+      column(
+        width = 3,
+        formattable::renderFormattable({
+          advantagesAwayTeam <- data.frame(
+            Kategorie = c("DVOA", "Passing DVOA", "Rushing DVOA"),
+            away_team = c(matchupAdvantages()$offense_weighted_dvoa[1], matchupAdvantages()$offense_pass_dvoa[1], matchupAdvantages()$offense_rush_dvoa[1]),
+            home_team = c(matchupAdvantages()$defense_weighted_dvoa[2], matchupAdvantages()$defense_pass_dvoa[2], matchupAdvantages()$defense_rush_dvoa[2])
+          ) %>% 
+            mutate(Diff = away_team + home_team) %>% 
+            rename(
+              "Team Offense" = "away_team",
+              "Gegner Defense" = "home_team",
+            ) 
+
+          formattable::formattable(
+            advantagesAwayTeam,
+            list(
+              "Team Offense" = formattable::color_tile("white", "#55efc4"),
+              "Gegner Defense" = formattable::color_tile("#55efc4", "white"),
+              "Diff" = formattable::color_tile("#ff7675", "#55efc4")
+            )
+          )
+        })
+      ),
+      column(
+        width = 6,
+        renderPlot(
+          height = 300,
+          expr = matchupSimGames() %>% 
+            ggplot(aes(x = result)) +
+              geom_histogram(dat = subset(matchupSimGames(), result < 0), fill = singleMatchup()$away_team_color[1]) + # win away team
+              geom_histogram(dat = subset(matchupSimGames(), result == 0)) + # tie
+              geom_histogram(dat = subset(matchupSimGames(), result > 0), fill = singleMatchup()$home_team_color[2]) + # win home team
+              geom_vline(aes(xintercept = mean(result)), color = var.colorAccent) + # sim mean
+              geom_point(x = singleMatchup()$spread_line[1], y = 25, color = var.colorAccent, size = 5, shape = 17) + # spread
+              annotate("text", x = singleMatchup()$spread_line[1], y = -70, label = "Spread", color = var.colorAccent) +
+              annotate("text", x = mean(matchupSimGames()$result), y = 1150, label = "Durchschnitt", color = var.colorAccent, hjust = 1.1) +
+              labs(
+                title = "Punktedifferenz basierend auf 10.000 Simulationen",
+                subtitle = "Je höher die Kurve in der Mitte, desto knapper das Ergebnis.",
+                caption = paste("Simulation: nflseedR;", var.plotCaption),
+                x = "Punktedifferenz aus Sicht des Heimteams",
+                y = "Häufigkeit"
+              ) +
+              ylim(c(-100, 1200)) +
+              theme_minimal()
+        )
+      ),
+      column(
+        width = 3,
+        formattable::renderFormattable({
+          advantagesHomeTeam <- data.frame(
+            Kategorie = c("DVOA", "Passing DVOA", "Rushing DVOA"),
+            away_team = c(matchupAdvantages()$offense_weighted_dvoa[2], matchupAdvantages()$offense_pass_dvoa[2], matchupAdvantages()$offense_rush_dvoa[2]),
+            home_team = c(matchupAdvantages()$defense_weighted_dvoa[1], matchupAdvantages()$defense_pass_dvoa[1], matchupAdvantages()$defense_rush_dvoa[1])
+          ) %>% 
+            mutate(Diff = away_team + home_team) %>% 
+            rename(
+              "Team Offense" = "away_team",
+              "Gegner Defense" = "home_team",
+            ) 
+
+          formattable::formattable(
+            advantagesHomeTeam,
+            list(
+              "Team Offense" = formattable::color_tile("white", "#55efc4"),
+              "Gegner Defense" = formattable::color_tile("#55efc4", "white"),
+              "Diff" = formattable::color_tile("#ff7675", "#55efc4")
+            )
+          )
+        })
+      )
+    ),
+    
+    DT::dataTableOutput("data")
+  
+})
+```
+
+
+
+```{r matchup-overview, eval=FALSE, fig.height=16, message=FALSE, warning=FALSE, include=FALSE}
+### Overview
+DT::renderDataTable({
+  formattable::formattable(
+    matchupsOverview,
+    list(
+      #"Total Line" = formattable::color_tile("white", "#55efc4"),
+      "Total Line" = formattable::color_tile("white", "#55efc4"),
+      "Away Score Line" = formattable::formatter("span", style = x ~ style(color = ifelse(x > matchupsOverview$"Home Score Line", "#00b894", NA))),
+      "Home Score Line" = formattable::formatter("span", style = x ~ style(color = ifelse(x > matchupsOverview$"Away Score Line", "#00b894", NA))),
+      "Wind" = formattable::color_bar("#74b9ff")
+      #"Home Score Line" = color_tile("white", "#55efc4")
+    )
+  ) %>% 
+  as.datatable(escape = FALSE, options = list(pageLength = 16, dom = "t"), rownames = F)
+})
+```
+
+
+```{r eval=FALSE, include=FALSE}
+> DVOA Vorteil = Differenz des [Total Weighted DVOA](https://www.footballoutsiders.com/info/methods). In Woche 1 wird er anhand der Daten aus der Vorsaison berechnet.
+
+### Erklärung
+
+WP = Resultat von 10.000 Simulationen
+```
+
+
