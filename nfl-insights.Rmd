@@ -9,6 +9,12 @@ output:
 runtime: shiny
 ---
 
+```{css}
+.chart-stage {
+  overflow-y: auto !important;
+}
+```
+
 ```{r setup, include=FALSE}
 library(flexdashboard)
 library(tidyverse)
@@ -25,6 +31,8 @@ library(shiny)
 library(gt)
 library(gtExtras)
 library(ggimage)
+library(shinyWidgets)
+library(nflplotR)
 
 #import font from sysfonts
 sysfonts::font_add_google("roboto","roboto")
@@ -64,103 +72,106 @@ pbp <- nflreadr::load_pbp(var.season)
 ```
 
 # Matchup Overview {data-navmenu="Matchups"}
-```{r matchups-globals, eval=FALSE, fig.height=20, message=TRUE, warning=TRUE, include=FALSE}
-source("R/matchups/matchups-plots.R", local = T)
-source("R/matchups/matchups-data.R", local = T)
+```{r matchups-globals, echo=FALSE, fig.height=20, message=TRUE, warning=TRUE}
+source("R/matchups/matchups-plots.R", local = TRUE)
+source("R/matchups/matchups-data.R", local = TRUE)
 
 matchups_renamed <- matchups %>% 
   rename(
     Team = team,
     Opp = opponent,
     "O/U" = total_line,
-    Spread = spread_line,
-    "Off DVOA" = offense_weighted_dvoa,
-    "Off Pass DVOA" = offense_pass_dvoa,
-    "Off Rush DVOA" = offense_rush_dvoa,
-    "Opp Def DVOA" = defense_weighted_dvoa,
-    "Opp Def Pass DVOA" = defense_pass_dvoa,
-    "Opp Def Rush DVOA" = defense_rush_dvoa,
-    "Off EPA" = adjusted_off_epa,
-    "Off Pass EPA" = adjusted_off_pass_epa,
-    "Off Rush EPA" = adjusted_off_run_epa,
-    "Opp Def EPA" = adjusted_def_epa,
-    "Opp Def Pass EPA" = adjusted_def_pass_epa,
-    "Opp Def Rush EPA" = adjusted_def_run_epa,
-    "Sec / Play Rank" = sec_per_play_rank,
-    "Sec / Play (leading) Rank" = sec_per_play_leading_rank,
-    "Sec / Play (trailing) Rank" = sec_per_play_trailing_rank,
-    "Sec / Play (neutral) Rank" = sec_per_play_neutral_rank
+    Spread = spread_line
+    #"Off DVOA" = offense_weighted_dvoa,
+    #"Off Pass DVOA" = offense_pass_dvoa,
+    #"Off Rush DVOA" = offense_rush_dvoa,
+    #"Opp Def DVOA" = defense_weighted_dvoa,
+    #"Opp Def Pass DVOA" = defense_pass_dvoa,
+    #"Opp Def Rush DVOA" = defense_rush_dvoa,
+    #"Off EPA" = adjusted_off_epa,
+    #"Off Pass EPA" = adjusted_off_pass_epa,
+    #"Off Rush EPA" = adjusted_off_run_epa,
+    #"Opp Def EPA" = adjusted_def_epa,
+    #"Opp Def Pass EPA" = adjusted_def_pass_epa,
+    #"Opp Def Rush EPA" = adjusted_def_run_epa,
+    #"Sec / Play Rank" = sec_per_play_rank,
+    #"Sec / Play (leading) Rank" = sec_per_play_leading_rank,
+    #"Sec / Play (trailing) Rank" = sec_per_play_trailing_rank,
+    #"Sec / Play (neutral) Rank" = sec_per_play_neutral_rank
   )
 ```
 
 ## Main {.tabset .tabset-fade}
 ### Total
-```{r matchup-total-comparison, eval=FALSE, fig.height=17, include=FALSE}
-output$matchups_total_dvoa <- renderPlot({
-  ggplot2::ggplot(matchups, aes(x = offense_weighted_dvoa, y = defense_weighted_dvoa)) +
-    matchup_annotations(matchups$offense_weighted_dvoa, matchups$defense_weighted_dvoa) +
-    matchup_overview_plot_defaults() +
+```{r matchup-total-comparison, echo=FALSE, fig.height=17}
+#output$matchups_total_dvoa <- renderPlot({
+#  ggplot2::ggplot(matchups, aes(x = offense_weighted_dvoa, y = defense_weighted_dvoa)) +
+#    matchup_annotations(matchups$offense_weighted_dvoa, matchups$defense_weighted_dvoa) +
+#    matchup_overview_plot_defaults() +
 
-    ggplot2::labs(
-      title = "Weighted Total DVOA Matchup",
-      subtitle = "Size indicates spread line (big logo = high favorite)",
-      x = "Weighted Total DVOA - Offense",
-      y = "Weighted Total DVOA - Opponent Defense"
-    )
-}, width = 900, height = 750)
+#    ggplot2::labs(
+#      title = "Weighted Total DVOA Matchup",
+#      subtitle = "Size indicates spread line (big logo = high favorite)",
+#      x = "Weighted Total DVOA - Offense",
+#      y = "Weighted Total DVOA - Opponent Defense"
+#    )
+#}, width = 900, height = 750)
 
-output$matchups_total_epa <- renderPlot({
-  ggplot2::ggplot(matchups, aes(x = adjusted_off_epa, y = adjusted_def_epa)) +
-    matchup_annotations(matchups$adjusted_off_epa, matchups$adjusted_def_epa) +
-    matchup_overview_plot_defaults() +
-    
-    ggplot2::labs(
-      title = "Adjusted Total EPA Matchup",
-      subtitle = "Size indicates spread line (big logo = high favorite)",
-      x = "Adjusted Total EPA - Offense",
-      y = "Adjusted Total EPA - Opponent Defense"
-    )
-}, width = 900, height = 750)
+#output$matchups_total_epa <- renderPlot({
+#  ggplot2::ggplot(matchups, aes(x = adjusted_off_epa, y = adjusted_def_epa)) +
+#    matchup_annotations(matchups$adjusted_off_epa, matchups$adjusted_def_epa) +
+#    matchup_overview_plot_defaults() +
+#    
+#    ggplot2::labs(
+#      title = "Adjusted Total EPA Matchup",
+#      subtitle = "Size indicates spread line (big logo = high favorite)",
+#      x = "Adjusted Total EPA - Offense",
+#      y = "Adjusted Total EPA - Opponent Defense"
+#    )
+#}, width = 900, height = 750)
 
 output$matchup_data <- DT::renderDataTable({
   
   formattable::formattable(
     matchups_renamed %>% 
-      select(Team, Opp, "O/U", Spread, "Off DVOA", "Opp Def DVOA", "Off EPA", "Opp Def EPA", "Off Pass DVOA", "Opp Def Pass DVOA", "Off Pass EPA", "Opp Def Pass EPA", "Off Rush DVOA", "Opp Def Rush DVOA", "Off Rush EPA", "Opp Def Rush EPA"),
+      select(Team, Opp, "O/U", Spread),
     list(
       "O/U" = formattable::color_tile("#e55039", "#78e08f"),
-      "Spread" = formattable::color_tile("#e55039", "#78e08f"),
-      "Off DVOA" = formattable::color_tile("#e55039", "#78e08f"),
-      "Off EPA" = formattable::color_tile("#e55039", "#78e08f"),
-      "Off Pass DVOA" = formattable::color_tile("#e55039", "#78e08f"),
-      "Off Pass EPA" = formattable::color_tile("#e55039", "#78e08f"),
-      "Off Rush DVOA" = formattable::color_tile("#e55039", "#78e08f"),
-      "Off Rush EPA" = formattable::color_tile("#e55039", "#78e08f"),
-      "Opp Def DVOA" = formattable::color_tile("#78e08f", "#e55039"),
-      "Opp Def EPA" = formattable::color_tile("#78e08f", "#e55039"),
-      "Opp Def Pass DVOA" = formattable::color_tile("#78e08f", "#e55039"),
-      "Opp Def Pass EPA" = formattable::color_tile("#78e08f", "#e55039"),
-      "Opp Def Rush DVOA" = formattable::color_tile("#78e08f", "#e55039"),
-      "Opp Def Rush EPA" = formattable::color_tile("#78e08f", "#e55039")
+      "Spread" = formattable::color_tile("#e55039", "#78e08f")
+      #"Off DVOA" = formattable::color_tile("#e55039", "#78e08f"),
+      #"Off EPA" = formattable::color_tile("#e55039", "#78e08f"),
+      #"Off Pass DVOA" = formattable::color_tile("#e55039", "#78e08f"),
+      #"Off Pass EPA" = formattable::color_tile("#e55039", "#78e08f"),
+      #"Off Rush DVOA" = formattable::color_tile("#e55039", "#78e08f"),
+      #"Off Rush EPA" = formattable::color_tile("#e55039", "#78e08f"),
+      #"Opp Def DVOA" = formattable::color_tile("#78e08f", "#e55039"),
+      #"Opp Def EPA" = formattable::color_tile("#78e08f", "#e55039"),
+      #"Opp Def Pass DVOA" = formattable::color_tile("#78e08f", "#e55039"),
+      #"Opp Def Pass EPA" = formattable::color_tile("#78e08f", "#e55039"),
+      #"Opp Def Rush DVOA" = formattable::color_tile("#78e08f", "#e55039"),
+      #"Opp Def Rush EPA" = formattable::color_tile("#78e08f", "#e55039")
     )
   ) %>% 
-  formattable::as.datatable(rownames = F, filter = "top", options = list(pageLength = 16, order = list(list(2, 'asc'), list(3, 'asc'))))
+  formattable::as.datatable(rownames = FALSE, filter = "top", options = list(pageLength = 16, order = list(list(2, 'asc'), list(3, 'asc'))))
 })
 
 renderUI({
   fluidRow(
     width = 12,
-    column(
-      width = 6,
-      plotOutput("matchups_total_dvoa")
-    ),
-    column(
-      width = 6,
-      plotOutput("matchups_total_epa")
-    ),
+    #column(
+    #  width = 6,
+    #  plotOutput("matchups_total_dvoa")
+    #),
+    #column(
+    #  width = 6,
+    #  plotOutput("matchups_total_epa")
+    #),
     column(
       width = 12,
-      DT::DTOutput("matchup_data")
+      div(
+        DT::DTOutput("matchup_data"),
+        style = "height: 850px;"
+      )
     )
   )
 })
@@ -446,6 +457,165 @@ DT::renderDataTable({
     rownames = F,
     filter = "top",
     options = list(pageLength = 5, order = list(4, 'desc'))
+  )
+})
+```
+
+
+# Matchup History {data-navmenu="History"}
+## Sidebar {.sidebar}
+```{r matchup-history-sidebar, echo=FALSE, message=TRUE, warning=TRUE}
+shiny::textInput(
+  "selectNflPlayer",
+  "Filter for NFL Player"
+)
+
+shinyWidgets::pickerInput(
+  "selectNflTeam",
+  "Filter for NFL Team",
+  choices = setNames(nflTeams$team_abbr, nflTeams$team_name),
+  selected = "ARI",
+  options = list("actions-box" = TRUE),
+  multiple= TRUE
+)
+
+shiny::sliderInput(
+  "selectPPG",
+  "Filter for FPTS/G",
+  min = 0,
+  max = 30,
+  value = 5,
+  step = 1,
+  ticks = FALSE
+)
+```
+
+## Main {.tabset .tabset-fade}
+```{r matchup-history-globals, message=TRUE, warning=TRUE, include=FALSE}
+source("R/players/player-stats.R", local = TRUE)
+```
+
+### QB
+```{r matchup-history-qb, echo=FALSE, fig.height=10, message=TRUE, warning=TRUE}
+output$matchup_history_qb <- gt::render_gt({
+    qb_stats %>% 
+      dplyr::filter(opponent_team %in% input$selectNflTeam & ppg >= input$selectPPG & grepl(input$selectNflPlayer, player_name)) %>% 
+      default_stats_gt() %>% 
+      passing_stats_gt() %>% 
+      rushing_stats_gt()
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 12,
+      div(
+        gt::gt_output("matchup_history_qb")
+      )
+    )
+  )
+})
+```
+
+### RB
+```{r matchup-history-rb, echo=FALSE, message=TRUE, warning=TRUE}
+output$matchup_history_rb <- gt::render_gt({
+    skill_stats %>% 
+      dplyr::filter(position == "RB" & opponent_team %in% input$selectNflTeam & ppg >= input$selectPPG) %>% 
+      default_stats_gt() %>% 
+      rushing_stats_gt() %>% 
+      receiving_stats_gt()
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 12,
+      div(
+        gt::gt_output("matchup_history_rb")
+      )
+    )
+  )
+})
+```
+
+### WR
+```{r matchup-history-wr, echo=FALSE, message=TRUE, warning=TRUE}
+output$matchup_history_wr <- gt::render_gt({
+    skill_stats %>% 
+      dplyr::filter(position == "WR", opponent_team %in% input$selectNflTeam & ppg >= input$selectPPG) %>% 
+      default_stats_gt() %>% 
+      receiving_stats_gt() %>% 
+      rushing_stats_gt()
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 12,
+      div(
+        gt::gt_output("matchup_history_wr")
+      )
+    )
+  )
+})
+```
+
+### TE
+```{r matchup-history-te, echo=FALSE, message=TRUE, warning=TRUE}
+output$matchup_history_te <- gt::render_gt({
+    skill_stats %>% 
+      dplyr::filter(position == "TE", opponent_team %in% input$selectNflTeam & ppg >= input$selectPPG) %>% 
+      default_stats_gt() %>% 
+      receiving_stats_gt() %>% 
+      rushing_stats_gt()
+})
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 12,
+      div(
+        gt::gt_output("matchup_history_te")
+      )
+    )
+  )
+})
+```
+
+# Flow Chart {data-navmenu="History"}
+## Sidebar {.sidebar}
+```{r flow-chart-sidebar, echo=FALSE, message=TRUE, warning=TRUE}
+shiny::sliderInput(
+  "selectTopFinish",
+  "Filter for Top-X Finish",
+  min = 1,
+  max = 48,
+  value = 12,
+  step = 1,
+  ticks = FALSE
+)
+```
+
+## Main
+```{r flow-chart, echo=FALSE, message=TRUE, warning=TRUE}
+source("R/matchups/matchups-data.R", local = TRUE)
+source("R/players/player-stats.R", local = TRUE)
+source("R/players/flow-chart.R", local = TRUE)
+
+renderUI({
+  fluidRow(
+    width = 12,
+    column(
+      width = 12,
+      div(
+        gt::gt_output("flow_chart")
+      )
+    )
   )
 })
 ```
